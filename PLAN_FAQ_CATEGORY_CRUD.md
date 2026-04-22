@@ -2,12 +2,13 @@
 
 ## Context
 
-Hệ thống FAQ hiện tại sử dụng static categories từ `config/qa_categories.php` (10 categories cố định). Cả admin và center đều cần khả năng tạo/sửa/xóa categories riêng trực tiếp trong giao diện quản lý FAQ. Category table hiện tại đã có sẵn và sẽ được mở rộng thành đa hình (polymorphic) để hỗ trợ cả admin và center.
+Hệ thống FAQ hiện tại sử dụng static categories từ `config/qa_categories.php` (10 categories cố định). Cả admin và center đều cần khả năng tạo/sửa/xóa categories riêng trực tiếp trong giao diện quản lý FAQ. Sẽ tạo table mới `qa_categories` riêng cho FAQ, không dùng table `categories` cũ. Phân biệt admin/center qua `center_id`: `center_id = 0` là của admin, `center_id > 0` là của center tương ứng.
 
 ## Yêu cầu
 
 - Admin và center có categories riêng biệt, đầy đủ CRUD
-- Dùng chung 1 table `categories` với polymorphic design (owner_type)
+- Tạo table mới `qa_categories` riêng cho FAQ (không dùng table `categories` cũ)
+- Phân biệt qua `center_id`: `0` = admin, `> 0` = center cụ thể
 - Category management UI dạng Dialog/Modal riêng biệt
 - Bỏ static config, chuyển hoàn toàn sang database
 
@@ -15,55 +16,76 @@ Hệ thống FAQ hiện tại sử dụng static categories từ `config/qa_cate
 
 ## Giai đoạn 1: Database & Backend
 
-### 1.1 Tạo Migration: Thêm polymorphic fields vào `categories` table
+### 1.1 Tạo Migration: Tạo table mới `qa_categories`
 
-**File mới**: `database/migrations/2025_04_22_add_polymorphic_fields_to_categories_table.php`
+**File mới**: `database/migrations/2025_04_22_create_qa_categories_table.php`
 
-**Schema changes**:
+**Schema**:
 ```php
-Schema::table('categories', function (Blueprint $table) {
-    $table->string('owner_type')->nullable()->after('level');     // 'admin' hoặc 'center'
-    $table->unsignedBigInteger('owner_id')->nullable()->after('owner_type');
-    $table->unsignedBigInteger('center_id')->nullable()->after('owner_id');
+Schema::create('qa_categories', function (Blueprint $table) {
+    $table->id();
+    $table->string('name');
+    $table->unsignedBigInteger('center_id')->default(0);  // 0 = admin, > 0 = center
+    $table->unsignedSmallInteger('order')->default(0);
+    $table->timestamps();
 
-    $table->index('owner_type');
-    $table->index('owner_id');
     $table->index('center_id');
     $table->foreign('center_id')->references('id')->on('centers')->onDelete('cascade');
 });
 ```
 
-- Update existing records: `owner_type = 'admin'`
+**Chú thích**: `center_id = 0` là categories của admin, `center_id > 0` là categories của center tương ứng. Không cần `owner_type` hay `owner_id`.
 
 ---
 
-### 1.2 Update Category Model
+### 1.2 Tạo QACategory Model
 
-**File sửa**: `app/Models/Category.php`
+**File mới**: `app/Models/QACategory.php`
 
-**Thay đổi**:
-- Thêm constants: `OWNER_TYPE_ADMIN = 'admin'`, `OWNER_TYPE_CENTER = 'center'`
-- Update `$fillable`: thêm `owner_type`, `owner_id`, `center_id`
-- Thêm relationship `owner()` (morphTo)
-- Thêm relationship `center()` (belongsTo Center)
-- Thêm scope `forAdmin()`: `where('owner_type', self::OWNER_TYPE_ADMIN)`
-- Thêm scope `forCenter($centerId)`: `where('owner_type', self::OWNER_TYPE_CENTER)->where('center_id', $centerId)`
-
----
-
-### 1.3 Tạo Query Builders cho Category
-
-**File mới**: `app/Models/Category/Queries/WhereOwnerTypeQuery.php`
 ```php
-class WhereOwnerTypeQuery implements QueryInterface {
-    public function __construct(private readonly string $ownerType) {}
-    public function getQuery(Builder $builder): void {
-        $builder->where('owner_type', $this->ownerType);
+class QACategory extends Model
+{
+    public const ADMIN_CENTER_ID = 0;
+
+    public $fillable = [
+        'name',
+        'center_id',
+        'order',
+    ];
+
+    public function center()
+    {
+        return $this->belongsTo(Center::class, 'center_id');
+    }
+
+    public function scopeForAdmin($query)
+    {
+        return $query->where('center_id', self::ADMIN_CENTER_ID);
+    }
+
+    public function scopeForCenter($query, $centerId)
+    {
+        return $query->where('center_id', $centerId);
     }
 }
 ```
 
-**File mới**: `app/Models/Category/Queries/WhereCenterIdQuery.php`
+---
+
+### 1.3 Tạo Query Builders cho QACategory
+
+**File mới**: `app/Models/QACategory/Queries/QACategoryQueryBuilder.php`
+```php
+class QACategoryQueryBuilder
+{
+    public static function whereCenterIdQuery(int $centerId): QueryInterface
+    {
+        return new WhereCenterIdQuery($centerId);
+    }
+}
+```
+
+**File mới**: `app/Models/QACategory/Queries/WhereCenterIdQuery.php`
 ```php
 class WhereCenterIdQuery implements QueryInterface {
     public function __construct(private readonly int $centerId) {}
@@ -73,31 +95,28 @@ class WhereCenterIdQuery implements QueryInterface {
 }
 ```
 
-**File sửa**: `app/Models/Category/Queries/CategoryQueryBuilder.php`
-- Thêm static methods: `whereOwnerTypeQuery($ownerType)`, `whereCenterIdQuery($centerId)`
-
 ---
 
-### 1.4 Update CategoryService
+### 1.4 Tạo QACategoryService
 
-**File sửa**: `app/Services/CategoryService.php`
+**File mới**: `app/Services/QACategoryService.php`
 
-**Thêm methods**:
-- `getAdminCategories()` - Lấy tất cả categories của admin
-- `getCenterCategories(int $centerId)` - Lấy categories của center cụ thể
+Extends `BaseCURDService`, chứa:
+- `getAdminCategories()` - Lấy categories có `center_id = 0`
+- `getCenterCategories(int $centerId)` - Lấy categories có `center_id = $centerId`
 - `getAdminCategoryById(int $id)` - Lấy category admin theo ID
 - `getCenterCategoryById(int $id, int $centerId)` - Lấy category center theo ID (verify ownership)
 
 ---
 
-### 1.5 Thêm categoryService vào AppService
+### 1.5 Thêm qaCategoryService vào AppService
 
 **File sửa**: `app/Services/AppService.php`
 
 ```php
-public static function categoryService(): CategoryService
+public static function qaCategoryService(): QACategoryService
 {
-    return self::make(CategoryService::class);
+    return self::make(QACategoryService::class);
 }
 ```
 
@@ -124,8 +143,8 @@ Rules: name (required|string|max:255), order (nullable|integer|min:0)
 
 | Method | Route | Chức năng |
 |--------|-------|-----------|
-| `index()` | GET `/admin/faq-categories` | List admin categories |
-| `store()` | POST `/admin/faq-categories` | Tạo category mới |
+| `index()` | GET `/admin/faq-categories` | List admin categories (`center_id = 0`) |
+| `store()` | POST `/admin/faq-categories` | Tạo category mới (`center_id = 0`) |
 | `update()` | PUT `/admin/faq-categories/{id}` | Cập nhật category |
 | `destroy()` | DELETE `/admin/faq-categories/{id}` | Xóa category (check FAQs liên quan) |
 | `options()` | GET `/admin/faq-categories/options` | Lấy categories cho select dropdown |
@@ -135,8 +154,8 @@ Rules: name (required|string|max:255), order (nullable|integer|min:0)
 | Method | Route | Chức năng |
 |--------|-------|-----------|
 | `index()` | GET `/center/faq-categories` | List center categories |
-| `store()` | POST `/center/faq-categories` | Tạo category mới |
-| `update()` | PUT `/center/faq-categories/{id}` | Cập nhật category |
+| `store()` | POST `/center/faq-categories` | Tạo category mới với `center_id` của center |
+| `update()` | PUT `/center/faq-categories/{id}` | Cập nhật category (verify ownership) |
 | `destroy()` | DELETE `/center/faq-categories/{id}` | Xóa category (check FAQs liên quan) |
 | `options()` | GET `/center/faq-categories/options` | Lấy categories cho select dropdown |
 
@@ -164,9 +183,9 @@ Route::get('faq-categories/options', [FAQCategoryController::class, 'options'])-
 
 Thay thế tất cả `config('qa_categories')` bằng:
 ```php
-$categories = AppService::categoryService()->get(
+$categories = AppService::qaCategoryService()->get(
     queryBuilder: [
-        CategoryQueryBuilder::whereOwnerTypeQuery(Category::OWNER_TYPE_ADMIN),
+        QACategoryQueryBuilder::whereCenterIdQuery(QACategory::ADMIN_CENTER_ID),
         BaseQueryBuilder::ordersQuery(['order' => 'asc']),
     ],
     output: BaseOutputBuilder::getCollection()
@@ -175,7 +194,7 @@ $categories = AppService::categoryService()->get(
 
 **File sửa**: `app/Http/Controllers/Center/QuestionAnswerController.php`
 
-Tương tự, thay thế `config('qa_categories')` bằng dynamic query với `OWNER_TYPE_CENTER` + `center_id`.
+Tương tự, thay thế `config('qa_categories')` bằng dynamic query với `center_id` của center hiện tại.
 
 ---
 
@@ -186,7 +205,7 @@ Tương tự, thay thế `config('qa_categories')` bằng dynamic query với `O
 // Thay thế:
 'category_id' => ['required', 'integer', Rule::in(range(1, 10))],
 // Bằng:
-'category_id' => ['required', 'integer', Rule::exists('categories', 'id')],
+'category_id' => ['required', 'integer', Rule::exists('qa_categories', 'id')],
 ```
 
 **Files sửa tương tự**:
@@ -207,9 +226,7 @@ export interface CategoryInterface {
     id: number;
     name: string;
     order?: number;
-    owner_type?: 'admin' | 'center';
-    owner_id?: number | null;
-    center_id?: number | null;
+    center_id?: number;
 }
 ```
 
@@ -277,7 +294,7 @@ Tương tự admin version nhưng gọi center routes.
 **UI thay đổi ở phần category dropdown**:
 ```tsx
 <div className="flex items-end gap-2">
-    <FormField name="category_id" ... /> {/* existing dropdown, w-6/12 */}
+    <FormField name="category_id" ... /> {/* existing dropdown */}
     <Button type="button" variant="outline" onClick={() => setCategoryModalOpen(true)}>
         <Settings className="h-4 w-4" />
     </Button>
@@ -331,9 +348,11 @@ Tương tự.
 
 | File | Mô tả |
 |------|--------|
-| `database/migrations/2025_04_22_add_polymorphic_fields_to_categories_table.php` | Migration thêm polymorphic fields |
-| `app/Models/Category/Queries/WhereOwnerTypeQuery.php` | Query builder theo owner_type |
-| `app/Models/Category/Queries/WhereCenterIdQuery.php` | Query builder theo center_id |
+| `database/migrations/2025_04_22_create_qa_categories_table.php` | Tạo table mới `qa_categories` |
+| `app/Models/QACategory.php` | Model cho qa_categories table |
+| `app/Models/QACategory/Queries/QACategoryQueryBuilder.php` | Query builder factory |
+| `app/Models/QACategory/Queries/WhereCenterIdQuery.php` | Query builder theo center_id |
+| `app/Services/QACategoryService.php` | Service layer cho CRUD |
 | `app/Http/Requests/Admin/FAQCategory/FAQCategoryCreateRequest.php` | Validation tạo category admin |
 | `app/Http/Requests/Admin/FAQCategory/FAQCategoryUpdateRequest.php` | Validation cập nhật category admin |
 | `app/Http/Requests/Center/FAQCategory/FAQCategoryCreateRequest.php` | Validation tạo category center |
@@ -348,10 +367,7 @@ Tương tự.
 
 | File | Thay đổi |
 |------|----------|
-| `app/Models/Category.php` | Thêm polymorphic support, scopes |
-| `app/Models/Category/Queries/CategoryQueryBuilder.php` | Thêm static methods mới |
-| `app/Services/CategoryService.php` | Thêm role-specific methods |
-| `app/Services/AppService.php` | Thêm `categoryService()` accessor |
+| `app/Services/AppService.php` | Thêm `qaCategoryService()` accessor |
 | `routes/admin.php` | Thêm FAQ category routes |
 | `routes/center.php` | Thêm FAQ category routes |
 | `app/Http/Controllers/Admin/QuestionAnswerController.php` | Thay `config()` bằng dynamic query |
