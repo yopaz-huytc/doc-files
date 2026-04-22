@@ -1,13 +1,13 @@
-# Plan: FAQ Category CRUD cho Admin & Center
+# Plan: QA Category CRUD cho Admin & Center
 
 ## Context
 
-Hệ thống FAQ hiện tại sử dụng static categories từ `config/qa_categories.php` (10 categories cố định). Cả admin và center đều cần khả năng tạo/sửa/xóa categories riêng trực tiếp trong giao diện quản lý FAQ. Sẽ tạo table mới `qa_categories` riêng cho FAQ, không dùng table `categories` cũ. Phân biệt admin/center qua `center_id`: `center_id = 0` là của admin, `center_id > 0` là của center tương ứng.
+Hệ thống QA hiện tại sử dụng static categories từ `config/qa_categories.php` (10 categories cố định). Cả admin và center đều cần khả năng tạo/sửa/xóa categories riêng trực tiếp trong giao diện quản lý QA. Sẽ tạo table mới `qa_categories` riêng cho QA, không dùng table `categories` cũ. Phân biệt admin/center qua `center_id`: `center_id = 0` là của admin, `center_id > 0` là của center tương ứng.
 
 ## Yêu cầu
 
 - Admin và center có categories riêng biệt, đầy đủ CRUD
-- Tạo table mới `qa_categories` riêng cho FAQ (không dùng table `categories` cũ)
+- Tạo table mới `qa_categories` riêng cho QA (không dùng table `categories` cũ)
 - Phân biệt qua `center_id`: `0` = admin, `> 0` = center cụ thể
 - Category management UI dạng Dialog/Modal riêng biệt
 - Bỏ static config, chuyển hoàn toàn sang database
@@ -30,11 +30,10 @@ Schema::create('qa_categories', function (Blueprint $table) {
     $table->timestamps();
 
     $table->index('center_id');
-    $table->foreign('center_id')->references('id')->on('centers')->onDelete('cascade');
 });
 ```
 
-**Chú thích**: `center_id = 0` là categories của admin, `center_id > 0` là categories của center tương ứng. Không cần `owner_type` hay `owner_id`.
+**Chú thích**: `center_id = 0` là categories của admin, `center_id > 0` là categories của center tương ứng. Không dùng foreign key cho center_id vì giá trị 0 không tồn tại trong centers table.
 
 ---
 
@@ -52,23 +51,10 @@ class QACategory extends Model
         'center_id',
         'order',
     ];
-
-    public function center()
-    {
-        return $this->belongsTo(Center::class, 'center_id');
-    }
-
-    public function scopeForAdmin($query)
-    {
-        return $query->where('center_id', self::ADMIN_CENTER_ID);
-    }
-
-    public function scopeForCenter($query, $centerId)
-    {
-        return $query->where('center_id', $centerId);
-    }
 }
 ```
+
+Không dùng scope trong model. Phân biệt admin/center bằng Query Builders (theo kiến trúc hiện tại của dự án).
 
 ---
 
@@ -124,56 +110,64 @@ public static function qaCategoryService(): QACategoryService
 
 ### 1.6 Tạo Request Validators
 
-**File mới**: `app/Http/Requests/Admin/FAQCategory/FAQCategoryCreateRequest.php`
+**File mới**: `app/Http/Requests/Admin/QACategory/QACategoryCreateRequest.php`
 ```
 Rules: name (required|string|max:255), order (nullable|integer|min:0)
 ```
 
-**File mới**: `app/Http/Requests/Admin/FAQCategory/FAQCategoryUpdateRequest.php`
+**File mới**: `app/Http/Requests/Admin/QACategory/QACategoryUpdateRequest.php`
 
-**File mới**: `app/Http/Requests/Center/FAQCategory/FAQCategoryCreateRequest.php`
+**File mới**: `app/Http/Requests/Center/QACategory/QACategoryCreateRequest.php`
 
-**File mới**: `app/Http/Requests/Center/FAQCategory/FAQCategoryUpdateRequest.php`
-
----
-
-### 1.7 Tạo Controllers
-
-**File mới**: `app/Http/Controllers/Admin/FAQCategoryController.php`
-
-| Method | Route | Chức năng |
-|--------|-------|-----------|
-| `index()` | GET `/admin/faq-categories` | List admin categories (`center_id = 0`) |
-| `store()` | POST `/admin/faq-categories` | Tạo category mới (`center_id = 0`) |
-| `update()` | PUT `/admin/faq-categories/{id}` | Cập nhật category |
-| `destroy()` | DELETE `/admin/faq-categories/{id}` | Xóa category (check FAQs liên quan) |
-| `options()` | GET `/admin/faq-categories/options` | Lấy categories cho select dropdown |
-
-**File mới**: `app/Http/Controllers/Center/FAQCategoryController.php`
-
-| Method | Route | Chức năng |
-|--------|-------|-----------|
-| `index()` | GET `/center/faq-categories` | List center categories |
-| `store()` | POST `/center/faq-categories` | Tạo category mới với `center_id` của center |
-| `update()` | PUT `/center/faq-categories/{id}` | Cập nhật category (verify ownership) |
-| `destroy()` | DELETE `/center/faq-categories/{id}` | Xóa category (check FAQs liên quan) |
-| `options()` | GET `/center/faq-categories/options` | Lấy categories cho select dropdown |
+**File mới**: `app/Http/Requests/Center/QACategory/QACategoryUpdateRequest.php`
 
 ---
 
-### 1.8 Thêm Routes
+### 1.7 Tạo Controllers (AJAX, trả về JSON)
 
-**File sửa**: `routes/admin.php` - Thêm vào trong group `middleware: auth_admin`:
-```php
-Route::resource('faq-categories', FAQCategoryController::class)->only(['index', 'store', 'update', 'destroy']);
-Route::get('faq-categories/options', [FAQCategoryController::class, 'options'])->name('faq-categories.options');
-```
+**File mới**: `app/Http/Controllers/Admin/QACategoryController.php`
 
-**File sửa**: `routes/center.php` - Thêm vào trong group `middleware: auth_center`:
+| Method | Route | Chức năng |
+|--------|-------|-----------|
+| `index()` | GET `/api/admin/qa-categories` | List admin categories (`center_id = 0`) |
+| `store()` | POST `/api/admin/qa-categories` | Tạo category mới (`center_id = 0`) |
+| `update()` | PUT `/api/admin/qa-categories/{id}` | Cập nhật category |
+| `destroy()` | DELETE `/api/admin/qa-categories/{id}` | Xóa category (check QAs liên quan) |
+| `options()` | GET `/api/admin/qa-categories/options` | Lấy categories cho select dropdown |
+
+**File mới**: `app/Http/Controllers/Center/QACategoryController.php`
+
+| Method | Route | Chức năng |
+|--------|-------|-----------|
+| `index()` | GET `/api/center/qa-categories` | List center categories |
+| `store()` | POST `/api/center/qa-categories` | Tạo category mới với `center_id` của center |
+| `update()` | PUT `/api/center/qa-categories/{id}` | Cập nhật category (verify ownership) |
+| `destroy()` | DELETE `/api/center/qa-categories/{id}` | Xóa category (check QAs liên quan) |
+| `options()` | GET `/api/center/qa-categories/options` | Lấy categories cho select dropdown |
+
+Tất cả methods trả về JSON response vì gọi qua AJAX.
+
+---
+
+### 1.8 Thêm AJAX Routes
+
+**File sửa**: `routes/admin_api.php` - Thêm vào:
 ```php
-Route::resource('faq-categories', FAQCategoryController::class)->only(['index', 'store', 'update', 'destroy']);
-Route::get('faq-categories/options', [FAQCategoryController::class, 'options'])->name('faq-categories.options');
+Route::group(['middleware' => ['auth_admin', 'set_admin_guard']], function () {
+    Route::resource('qa-categories', QACategoryController::class)->only(['index', 'store', 'update', 'destroy']);
+    Route::get('qa-categories/options', [QACategoryController::class, 'options'])->name('qa-categories.options');
+});
 ```
+→ Routes sẽ là `/api/admin/qa-categories/...`
+
+**File sửa**: `routes/center_api.php` - Thêm vào:
+```php
+Route::group(['middleware' => ['auth_center', 'set_center_guard']], function () {
+    Route::resource('qa-categories', QACategoryController::class)->only(['index', 'store', 'update', 'destroy']);
+    Route::get('qa-categories/options', [QACategoryController::class, 'options'])->name('qa-categories.options');
+});
+```
+→ Routes sẽ là `/api/center/qa-categories/...`
 
 ---
 
@@ -232,39 +226,55 @@ export interface CategoryInterface {
 
 ---
 
-### 2.2 Tạo FAQ Category Module
+### 2.2 Tạo QA Category Module
 
-**File mới**: `resources/js/modules/faq_category/index.ts`
+**File mới**: `resources/js/modules/qa_category/index.ts`
 
 ```typescript
-export interface FAQCategoryFormData {
+export interface QACategoryFormData {
     name: string;
     order?: number;
 }
 
-export const faqCategorySchema = z.object({
+export const qaCategorySchema = z.object({
     name: z.string().min(1, 'カテゴリー名を入力してください').max(255),
     order: z.number().min(0).optional(),
 });
+
+// API functions (gọi AJAX qua axios)
+export const getAdminQACategories = async () => { ... };
+export const createAdminQACategory = async (data: QACategoryFormData) => { ... };
+export const updateAdminQACategory = async (id: number, data: QACategoryFormData) => { ... };
+export const deleteAdminQACategory = async (id: number) => { ... };
+export const getAdminQACategoryOptions = async () => { ... };
+
+// Center versions
+export const getCenterQACategories = async () => { ... };
+export const createCenterQACategory = async (data: QACategoryFormData) => { ... };
+export const updateCenterQACategory = async (id: number, data: QACategoryFormData) => { ... };
+export const deleteCenterQACategory = async (id: number) => { ... };
+export const getCenterQACategoryOptions = async () => { ... };
 ```
+
+API functions dùng `axios` trực tiếp (theo pattern `resources/js/modules/center/api.ts`), gọi đến `/api/admin/qa-categories/...` hoặc `/api/center/qa-categories/...`.
 
 ---
 
 ### 2.3 Tạo Category Management Modal (Admin)
 
-**File mới**: `resources/js/admin/pages/questionAnswer/faq-category-modal.tsx`
+**File mới**: `resources/js/admin/pages/questionAnswer/qa-category-modal.tsx`
 
 **UI Structure**:
 - Dialog/Modal wrapper (shadcn/ui Dialog)
 - Header: "カテゴリー管理"
-- Category list: table hiển thị name, order, số FAQs liên quan, nút edit/delete
+- Category list: table hiển thị name, order, số QAs liên quan, nút edit/delete
 - Form thêm/sửa category: input name, input order, buttons save/cancel
-- Xử lý CRUD qua Inertia.js router calls
+- Xử lý CRUD qua AJAX calls (axios) đến `/api/admin/qa-categories/...`
 - Callback `onCategoryChange` khi categories thay đổi để refresh dropdown
 
 **Props**:
 ```typescript
-interface FAQCategoryModalProps {
+interface QACategoryModalProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     onCategoryChange: () => void;
@@ -275,20 +285,20 @@ interface FAQCategoryModalProps {
 
 ### 2.4 Tạo Category Management Modal (Center)
 
-**File mới**: `resources/js/center/pages/questionAnswer/faq-category-modal.tsx`
+**File mới**: `resources/js/center/pages/questionAnswer/qa-category-modal.tsx`
 
-Tương tự admin version nhưng gọi center routes.
+Tương tự admin version nhưng gọi `/api/center/qa-categories/...`.
 
 ---
 
-### 2.5 Update FAQ Forms
+### 2.5 Update QA Forms
 
 **File sửa**: `resources/js/admin/pages/questionAnswer/question-answer-form.tsx`
 
 **Thay đổi**:
-- Thêm state `categories` và fetch từ API (thay vì chỉ nhận qua props)
+- Thêm state `categories` và fetch từ AJAX (thay vì chỉ nhận qua props)
 - Thêm button "カテゴリー管理" bên cạnh category dropdown
-- Tích hợp `FAQCategoryModal`
+- Tích hợp `QACategoryModal`
 - Khi category CRUD xong → refresh categories list → update dropdown
 
 **UI thay đổi ở phần category dropdown**:
@@ -307,13 +317,13 @@ Tương tự.
 
 ---
 
-### 2.6 Update FAQ Pages
+### 2.6 Update QA Pages
 
 **File sửa**: `resources/js/admin/pages/questionAnswer/question-answer-page.tsx`
 
 **Thay đổi**:
 - Thêm button "カテゴリー管理" ở header (bên cạnh "FAQを追加")
-- Tích hợp `FAQCategoryModal`
+- Tích hợp `QACategoryModal`
 - Khi categories thay đổi → refresh page data
 
 **File sửa**: `resources/js/center/pages/questionAnswer/question-answer-page.tsx`
@@ -322,7 +332,7 @@ Tương tự.
 
 ---
 
-### 2.7 Update FAQ Tables
+### 2.7 Update QA Tables
 
 **File sửa**: `resources/js/admin/pages/questionAnswer/question-answer-table.tsx`
 - Update để handle dynamic categories (có thể categories thay đổi)
@@ -353,23 +363,23 @@ Tương tự.
 | `app/Models/QACategory/Queries/QACategoryQueryBuilder.php` | Query builder factory |
 | `app/Models/QACategory/Queries/WhereCenterIdQuery.php` | Query builder theo center_id |
 | `app/Services/QACategoryService.php` | Service layer cho CRUD |
-| `app/Http/Requests/Admin/FAQCategory/FAQCategoryCreateRequest.php` | Validation tạo category admin |
-| `app/Http/Requests/Admin/FAQCategory/FAQCategoryUpdateRequest.php` | Validation cập nhật category admin |
-| `app/Http/Requests/Center/FAQCategory/FAQCategoryCreateRequest.php` | Validation tạo category center |
-| `app/Http/Requests/Center/FAQCategory/FAQCategoryUpdateRequest.php` | Validation cập nhật category center |
-| `app/Http/Controllers/Admin/FAQCategoryController.php` | Controller CRUD categories admin |
-| `app/Http/Controllers/Center/FAQCategoryController.php` | Controller CRUD categories center |
-| `resources/js/modules/faq_category/index.ts` | TypeScript types & Zod schemas |
-| `resources/js/admin/pages/questionAnswer/faq-category-modal.tsx` | Modal quản lý categories admin |
-| `resources/js/center/pages/questionAnswer/faq-category-modal.tsx` | Modal quản lý categories center |
+| `app/Http/Requests/Admin/QACategory/QACategoryCreateRequest.php` | Validation tạo category admin |
+| `app/Http/Requests/Admin/QACategory/QACategoryUpdateRequest.php` | Validation cập nhật category admin |
+| `app/Http/Requests/Center/QACategory/QACategoryCreateRequest.php` | Validation tạo category center |
+| `app/Http/Requests/Center/QACategory/QACategoryUpdateRequest.php` | Validation cập nhật category center |
+| `app/Http/Controllers/Admin/QACategoryController.php` | Controller CRUD categories admin (AJAX/JSON) |
+| `app/Http/Controllers/Center/QACategoryController.php` | Controller CRUD categories center (AJAX/JSON) |
+| `resources/js/modules/qa_category/index.ts` | TypeScript types, Zod schemas & AJAX API functions |
+| `resources/js/admin/pages/questionAnswer/qa-category-modal.tsx` | Modal quản lý categories admin |
+| `resources/js/center/pages/questionAnswer/qa-category-modal.tsx` | Modal quản lý categories center |
 
 ### Files cần sửa:
 
 | File | Thay đổi |
 |------|----------|
 | `app/Services/AppService.php` | Thêm `qaCategoryService()` accessor |
-| `routes/admin.php` | Thêm FAQ category routes |
-| `routes/center.php` | Thêm FAQ category routes |
+| `routes/admin_api.php` | Thêm QA category AJAX routes (`/api/admin/qa-categories/...`) |
+| `routes/center_api.php` | Thêm QA category AJAX routes (`/api/center/qa-categories/...`) |
 | `app/Http/Controllers/Admin/QuestionAnswerController.php` | Thay `config()` bằng dynamic query |
 | `app/Http/Controllers/Center/QuestionAnswerController.php` | Thay `config()` bằng dynamic query |
 | `app/Http/Requests/Admin/QuestionAnswer/QuestionAnswerCreateRequest.php` | Update category_id validation |
